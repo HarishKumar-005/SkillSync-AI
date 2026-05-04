@@ -112,6 +112,7 @@ def query_collection(
     collection: chromadb.Collection,
     query_embedding: list[float],
     n_results: int = 5,
+    where_filter: dict | None = None,
 ) -> dict:
     """
     Query the ChromaDB collection for the most similar chunks.
@@ -120,6 +121,7 @@ def query_collection(
         collection: ChromaDB collection to search.
         query_embedding: Embedding vector of the query.
         n_results: Number of results to return. Defaults to 5.
+        where_filter: Optional metadata filter dict (e.g., {"section": "PROJECTS"}).
 
     Returns:
         ChromaDB query result dict with keys: ids, documents, metadatas, distances.
@@ -135,12 +137,20 @@ def query_collection(
         return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
 
     actual_n = min(n_results, total)
+    
+    query_kwargs = {
+        "query_embeddings": [query_embedding],
+        "n_results": actual_n,
+        "include": ["documents", "metadatas", "distances"],
+    }
+    
+    if where_filter:
+        # Check if any documents match the filter before querying, 
+        # as ChromaDB might throw an error if no documents match and we ask for n_results.
+        # Actually, chroma handles empty filter results gracefully by returning empty lists.
+        query_kwargs["where"] = where_filter
 
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=actual_n,
-        include=["documents", "metadatas", "distances"],
-    )
+    results = collection.query(**query_kwargs)
 
     logger.info("Query returned %d results.", len(results["ids"][0]))
     return results

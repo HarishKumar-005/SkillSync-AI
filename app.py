@@ -19,7 +19,7 @@ from src.chunker import chunk_text
 from src.embeddings import get_embedding_model, embed_texts
 from src.vectorstore import get_chroma_client, create_collection, add_chunks
 from src.retriever import retrieve
-from src.qa import answer_question
+from src.qa import answer_question, _detect_target_section
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -327,12 +327,25 @@ if prompt := st.chat_input("Ask a question about your document...", key="chat_in
             })
         else:
             with st.spinner("🔍 Searching document..."):
-                # Retrieve relevant chunks
-                results = retrieve(
-                    collection=st.session_state.collection,
-                    query=prompt,
-                    top_k=5,
-                )
+                target_section = _detect_target_section(prompt)
+                
+                results = []
+                if target_section:
+                    # Stage 1: Targeted retrieval
+                    results = retrieve(
+                        collection=st.session_state.collection,
+                        query=prompt,
+                        top_k=5,
+                        where_filter={"section": target_section}
+                    )
+                
+                # Stage 2: Fallback to global retrieval if targeted yields nothing
+                if not results:
+                    results = retrieve(
+                        collection=st.session_state.collection,
+                        query=prompt,
+                        top_k=5,
+                    )
 
                 # Generate answer
                 response = answer_question(prompt, results)

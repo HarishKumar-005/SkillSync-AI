@@ -51,7 +51,7 @@ _SECTION_KEYWORDS = {
     "technologies": "SKILLS",
     "tech stack": "SKILLS",
     "programming": "SKILLS",
-    "languages": "SKILLS",
+    "languages": "LANGUAGES",
     "projects": "PROJECTS",
     "project": "PROJECTS",
     "certificates": "CERTIFICATES",
@@ -66,6 +66,8 @@ _SECTION_KEYWORDS = {
     "contact": "CONTACT",
     "achievements": "ACHIEVEMENTS",
     "awards": "ACHIEVEMENTS",
+    "interests": "INTERESTS",
+    "hobbies": "INTERESTS",
 }
 
 
@@ -100,28 +102,42 @@ def _detect_target_section(query: str) -> str | None:
 # Information extraction from chunks
 # ---------------------------------------------------------------------------
 
-def _extract_list_items(text: str) -> list[str]:
+def _extract_list_items(text: str, target_section: str | None = None) -> list[str]:
     """
     Extract individual items from a chunk of text.
     Handles comma-separated lists, bullet points, and line-separated items.
+    Aware of the target section (e.g., skips splitting by comma for PROJECTS).
     """
     items = []
 
-    # Split by common list separators
+    # Common resume headers to ignore if they sneak into the chunk
+    ignore_headers = {"projects", "technical skills", "skills", "certifications", "certificates", 
+                      "education", "work experience", "experience", "profile", "summary", 
+                      "languages", "interests", "hobbies"}
+
     lines = text.split('\n')
     for line in lines:
         line = line.strip()
         if not line:
             continue
 
-        # Remove bullet-point prefixes
-        line = re.sub(r'^[\-\•\*\▪\►\➤\→\‣\⁃]\s*', '', line)
-        line = re.sub(r'^\d+[\.\)]\s*', '', line)
+        # Ignore obvious section headers
+        if len(line) < 40 and line.lower() in ignore_headers:
+            continue
+            
+        # Ignore contact-like lines (emails, urls) if we are not in CONTACT
+        if target_section != "CONTACT" and ("@" in line or "github.com" in line.lower() or "linkedin.com" in line.lower()):
+            continue
 
-        # If line contains a colon (like "Languages: Python, Java, C++"), split after colon
-        if ':' in line:
-            parts = line.split(':', 1)
-            label = parts[0].strip()
+        # Remove bullet-point prefixes
+        clean_line = re.sub(r'^[\-\•\*\▪\►\➤\→\‣\⁃]\s*', '', line)
+        clean_line = re.sub(r'^\d+[\.\)]\s*', '', clean_line)
+
+        is_skills_or_languages = target_section in ("SKILLS", "LANGUAGES")
+
+        # For skills/languages, if line contains a colon, split after colon
+        if is_skills_or_languages and ':' in clean_line:
+            parts = clean_line.split(':', 1)
             values = parts[1].strip()
             if values:
                 # Split comma-separated values
@@ -130,17 +146,32 @@ def _extract_list_items(text: str) -> list[str]:
                     items.extend(sub_items)
                     continue
 
-        # If line has commas, split by commas
-        if ',' in line:
-            sub_items = [v.strip() for v in line.split(',') if v.strip()]
-            # Only treat as list if items are reasonably short (< 80 chars each)
-            if all(len(item) < 80 for item in sub_items):
+        # For skills/languages, if line has commas, split by commas
+        if is_skills_or_languages and ',' in clean_line:
+            sub_items = [v.strip() for v in clean_line.split(',') if v.strip()]
+            if all(len(item) < 60 for item in sub_items):
                 items.extend(sub_items)
                 continue
 
-        # Otherwise add the whole line as one item
-        if len(line) < 200 and line:
-            items.append(line)
+        # For projects/certificates/etc, we treat the whole line as one item
+        # We only accept it if it's a substantive line, not a generic description word
+        if len(clean_line) > 5 and len(clean_line) < 150:
+            # If it's a project, typically the title is the first part before a colon or dash, 
+            # but the user wants the full line (e.g. "Phantom Crowd – AR-Based Civic Intelligence Platform").
+            # However, we don't want to include pure description lines.
+            # Usually, title lines contain a specific marker, or are bullet points.
+            if target_section in ("PROJECTS", "CERTIFICATES"):
+                # If the original line had a bullet, it's definitely an item
+                has_bullet = bool(re.match(r'^[\-\•\*\▪\►\➤\→\‣\⁃]|\d+[\.\)]', line))
+                # Or if it has a dash/en-dash separating title and description
+                has_separator = bool(re.search(r'\s+[\-\–\—\|]\s+', clean_line))
+                # Or if it's short and doesn't look like a description paragraph
+                is_short_title = len(clean_line) < 80 and not clean_line.endswith('.')
+                
+                if has_bullet or has_separator or is_short_title:
+                    items.append(clean_line)
+            else:
+                items.append(clean_line)
 
     # Deduplicate while preserving order
     seen = set()
@@ -169,7 +200,7 @@ def _build_list_answer(query: str, relevant_chunks: list[dict], target_section: 
     # Extract items from the most relevant chunks
     all_items = []
     for chunk in ordered[:3]:
-        items = _extract_list_items(chunk["text"])
+        items = _extract_list_items(chunk["text"], target_section=target_section)
         all_items.extend(items)
 
     # Deduplicate
@@ -188,15 +219,17 @@ def _build_list_answer(query: str, relevant_chunks: list[dict], target_section: 
     # Determine the subject from the query
     subject = "items"
     query_lower = query.lower()
-    if "skill" in query_lower or "tool" in query_lower or "technolog" in query_lower:
-        subject = "skills/technologies"
-    elif "project" in query_lower:
+    if target_section == "PROJECTS" or "project" in query_lower:
         subject = "projects"
-    elif "certif" in query_lower:
+    elif target_section == "CERTIFICATES" or "certif" in query_lower:
         subject = "certifications"
-    elif "experience" in query_lower or "work" in query_lower:
+    elif target_section == "SKILLS" or "skill" in query_lower or "tool" in query_lower or "technolog" in query_lower:
+        subject = "skills/technologies"
+    elif target_section == "LANGUAGES" or "language" in query_lower:
+        subject = "languages"
+    elif target_section == "EXPERIENCE" or "experience" in query_lower or "work" in query_lower:
         subject = "work experience entries"
-    elif "education" in query_lower:
+    elif target_section == "EDUCATION" or "education" in query_lower:
         subject = "education entries"
 
     # Format the answer
@@ -239,7 +272,7 @@ def _build_summary_answer(query: str, relevant_chunks: list[dict]) -> str:
 
     # From skills (brief)
     for chunk in skills_chunks[:1]:
-        items = _extract_list_items(chunk["text"])
+        items = _extract_list_items(chunk["text"], target_section="SKILLS")
         if items:
             top_items = items[:6]
             summary_parts.append(f"Key skills include: {', '.join(top_items)}.")

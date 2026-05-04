@@ -16,6 +16,7 @@ def retrieve(
     collection,
     query: str,
     top_k: int = 5,
+    where_filter: dict | None = None,
 ) -> list[dict]:
     """
     Retrieve the most relevant document chunks for a given query.
@@ -24,6 +25,7 @@ def retrieve(
         collection: ChromaDB collection to search.
         query: User's question string.
         top_k: Number of top results to return. Defaults to 5.
+        where_filter: Optional filter dict to restrict search (e.g., {"section": "PROJECTS"}).
 
     Returns:
         List of result dicts, each containing:
@@ -43,7 +45,7 @@ def retrieve(
         return []
 
     # Search ChromaDB
-    results = query_collection(collection, query_embedding, n_results=top_k)
+    results = query_collection(collection, query_embedding, n_results=top_k, where_filter=where_filter)
 
     # Unpack results into a clean format
     retrieved = []
