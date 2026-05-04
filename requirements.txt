@@ -3,3 +3,4 @@ chromadb==1.5.8
 sentence-transformers==5.4.1
 pypdf==6.10.2
 python-docx==1.2.0
+torchvision
