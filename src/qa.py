@@ -24,13 +24,8 @@ RELEVANCE_THRESHOLD = 0.3
 
 # Patterns for each query type
 _LIST_PATTERNS = [
-    r'(?i)\bwhat\s+(?:are|were)\s+(?:the\s+)?(?:skills?|tools?|technologies?|tech\s+stack)',
-    r'(?i)\bwhat\s+(?:skills?|tools?|technologies?|projects?|certific)',
-    r'(?i)\blist\s+(?:the\s+)?(?:skills?|projects?|certific|tools?|technologies?)',
-    r'(?i)\bwhich\s+(?:skills?|tools?|technologies?|projects?|certific|languages?)',
-    r'(?i)\bwhat\s+(?:projects?|certific)',
-    r'(?i)\b(?:skills?|projects?|certific|tools?|technologies?)\s+(?:are|were)\s+(?:mentioned|listed|included)',
-    r'(?i)\bname\s+(?:the\s+)?(?:skills?|projects?|certific)',
+    r'(?i)\b(?:what|list|name|show|which)\b.*?\b(?:skills?|tools?|technologies?|projects?|certificat(?:es?|ions?)|languages?|education|experience|achievements?|awards?)\b',
+    r'(?i)\b(?:skills?|projects?|certificat(?:es?|ions?)|tools?|technologies?)\s+(?:are|were)\b',
 ]
 
 _SUMMARY_PATTERNS = [
@@ -109,20 +104,64 @@ def _extract_list_items(text: str, target_section: str | None = None) -> list[st
     Aware of the target section (e.g., skips splitting by comma for PROJECTS).
     """
     items = []
-
     # Common resume headers to ignore if they sneak into the chunk
     ignore_headers = {"projects", "technical skills", "skills", "certifications", "certificates", 
                       "education", "work experience", "experience", "profile", "summary", 
-                      "languages", "interests", "hobbies"}
+                      "languages", "interests", "hobbies", "professional skills", "soft skills", 
+                      "hard skills", "tools", "frameworks", "databases", "cloud & big data", "tools & ides"}
 
-    lines = text.split('\n')
-    for line in lines:
+    raw_lines = text.split('\n')
+    
+    # Pre-processing: split inline bullets
+    split_lines = []
+    for line in raw_lines:
+        line = line.strip()
+        bullets = re.findall(r'[\•\*\▪\►\➤\→\‣\⁃]', line)
+        if len(bullets) > 1:
+            parts = re.split(r'[\•\*\▪\►\➤\→\‣\⁃]', line)
+            split_lines.extend([p.strip() for p in parts if p.strip()])
+        else:
+            split_lines.append(line)
+
+    # Education block merging
+    processed_lines = []
+    if target_section == "EDUCATION":
+        i = 0
+        while i < len(split_lines):
+            line = split_lines[i]
+            if not line:
+                i += 1
+                continue
+            
+            if line.upper() == "EDUCATION":
+                processed_lines.append(line)
+                i += 1
+                continue
+
+            has_bullet_curr = bool(re.match(r'^[\-\•\*\▪\►\➤\→\‣\⁃]|\d+[\.\)]', line))
+            if not has_bullet_curr and i + 1 < len(split_lines):
+                next_line = split_lines[i+1]
+                if next_line and next_line.upper() != "EDUCATION":
+                    has_bullet_next = bool(re.match(r'^[\-\•\*\▪\►\➤\→\‣\⁃]|\d+[\.\)]', next_line))
+                    if not has_bullet_next and len(line) < 100 and len(next_line) < 100:
+                        line = f"{line} - {next_line}"
+                        i += 1
+            processed_lines.append(line)
+            i += 1
+    else:
+        processed_lines = split_lines
+
+    items = []
+    for line in processed_lines:
         line = line.strip()
         if not line:
             continue
 
         # Ignore obvious section headers
         if len(line) < 40 and line.lower() in ignore_headers:
+            continue
+            
+        if target_section and line.upper() == target_section:
             continue
             
         # Ignore contact-like lines (emails, urls) if we are not in CONTACT
@@ -133,10 +172,10 @@ def _extract_list_items(text: str, target_section: str | None = None) -> list[st
         clean_line = re.sub(r'^[\-\•\*\▪\►\➤\→\‣\⁃]\s*', '', line)
         clean_line = re.sub(r'^\d+[\.\)]\s*', '', clean_line)
 
-        is_skills_or_languages = target_section in ("SKILLS", "LANGUAGES")
+        is_comma_split_section = target_section in ("SKILLS", "LANGUAGES")
 
         # For skills/languages, if line contains a colon, split after colon
-        if is_skills_or_languages and ':' in clean_line:
+        if target_section in ("SKILLS", "LANGUAGES") and ':' in clean_line:
             parts = clean_line.split(':', 1)
             values = parts[1].strip()
             if values:
@@ -146,26 +185,25 @@ def _extract_list_items(text: str, target_section: str | None = None) -> list[st
                     items.extend(sub_items)
                     continue
 
-        # For skills/languages, if line has commas, split by commas
-        if is_skills_or_languages and ',' in clean_line:
+        # For comma-split sections, if line has commas, split by commas
+        if is_comma_split_section and ',' in clean_line:
             sub_items = [v.strip() for v in clean_line.split(',') if v.strip()]
-            if all(len(item) < 60 for item in sub_items):
+            if all(len(item) < 80 for item in sub_items):
                 items.extend(sub_items)
                 continue
 
         # For projects/certificates/etc, we treat the whole line as one item
-        # We only accept it if it's a substantive line, not a generic description word
-        if len(clean_line) > 5 and len(clean_line) < 150:
-            # If it's a project, typically the title is the first part before a colon or dash, 
-            # but the user wants the full line (e.g. "Phantom Crowd – AR-Based Civic Intelligence Platform").
-            # However, we don't want to include pure description lines.
-            # Usually, title lines contain a specific marker, or are bullet points.
-            if target_section in ("PROJECTS", "CERTIFICATES"):
-                # If the original line had a bullet, it's definitely an item
+        if len(clean_line) > 2 and len(clean_line) < 150:
+            if target_section in ("PROJECTS", "CERTIFICATES", "EDUCATION", "EXPERIENCE", "ACHIEVEMENTS"):
+                
+                # Project Noise Reduction
+                if target_section == "PROJECTS":
+                    cl_lower = clean_line.lower()
+                    if cl_lower.startswith("tech stack") or cl_lower.startswith("technologies") or cl_lower.startswith("tools"):
+                        continue
+
                 has_bullet = bool(re.match(r'^[\-\•\*\▪\►\➤\→\‣\⁃]|\d+[\.\)]', line))
-                # Or if it has a dash/en-dash separating title and description
                 has_separator = bool(re.search(r'\s+[\-\–\—\|]\s+', clean_line))
-                # Or if it's short and doesn't look like a description paragraph
                 is_short_title = len(clean_line) < 80 and not clean_line.endswith('.')
                 
                 if has_bullet or has_separator or is_short_title:
@@ -173,10 +211,22 @@ def _extract_list_items(text: str, target_section: str | None = None) -> list[st
             else:
                 items.append(clean_line)
 
+    # Normalize: Split combined items like "AWS & Hadoop" -> "AWS", "Hadoop"
+    final_items = []
+    for item in items:
+        if target_section in ("SKILLS", "LANGUAGES"):
+            if '&' in item or ' and ' in item.lower():
+                parts = re.split(r'\s+&\s+|\s+and\s+', item, flags=re.IGNORECASE)
+                final_items.extend([p.strip() for p in parts if p.strip()])
+            else:
+                final_items.append(item)
+        else:
+            final_items.append(item)
+
     # Deduplicate while preserving order
     seen = set()
     unique = []
-    for item in items:
+    for item in final_items:
         item_clean = item.strip().rstrip('.')
         if item_clean and item_clean.lower() not in seen:
             seen.add(item_clean.lower())
@@ -192,8 +242,9 @@ def _build_list_answer(query: str, relevant_chunks: list[dict], target_section: 
     # Prioritize chunks from the target section
     if target_section:
         section_chunks = [c for c in relevant_chunks if c.get("section") == target_section]
-        other_chunks = [c for c in relevant_chunks if c.get("section") != target_section]
-        ordered = section_chunks + other_chunks
+        if not section_chunks:
+            return f"I couldn't find a dedicated {target_section.replace('_', ' ').title()} section in the document."
+        ordered = section_chunks
     else:
         ordered = relevant_chunks
 
@@ -278,7 +329,16 @@ def _build_summary_answer(query: str, relevant_chunks: list[dict]) -> str:
             summary_parts.append(f"Key skills include: {', '.join(top_items)}.")
 
     if summary_parts:
-        return "**Profile Summary:**\n\n" + ' '.join(summary_parts)
+        summary_text = ' '.join(summary_parts)
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', summary_text) if s.strip()]
+        
+        query_lower = query.lower()
+        if "one line" in query_lower or "1 line" in query_lower or "single line" in query_lower:
+            summary_text = sentences[0] if sentences else summary_text
+        elif "two lines" in query_lower or "2 lines" in query_lower or "short" in query_lower:
+            summary_text = " ".join(sentences[:min(2, len(sentences))]) if sentences else summary_text
+            
+        return "**Profile Summary:**\n\n" + summary_text.strip()
 
     # Fallback: just use top chunks
     return _build_detail_answer(query, relevant_chunks)
@@ -384,6 +444,10 @@ def answer_question(query: str, retrieved_chunks: list[dict]) -> dict:
         answer = _build_summary_answer(query, relevant_chunks)
     else:
         answer = _build_detail_answer(query, relevant_chunks)
+
+    # Append Confidence Scoring visually
+    if "I couldn't find" not in answer:
+        answer += f"\n\n*Confidence: {confidence.upper()}*"
 
     logger.info(
         "Generated %s-confidence %s answer from %d relevant chunks (top score: %.4f)",

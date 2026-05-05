@@ -15,6 +15,7 @@ chroma_db/
 data/uploads/*
 !data/uploads/.gitkeep
 
+
 # Environment variables
 .env
 
