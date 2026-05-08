@@ -457,3 +457,524 @@ class TestEmbeddings:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
+
+
+# ===========================================================================
+# WEEK 2 TESTS
+# ===========================================================================
+
+# Sample JD text for testing
+SAMPLE_JD_TEXT = """
+Senior Python Developer
+
+Requirements:
+- 5+ years of Python development experience
+- Strong experience with Django or FastAPI
+- Experience with PostgreSQL and MongoDB
+- AWS cloud services (EC2, S3, Lambda)
+- Docker and Kubernetes
+- CI/CD pipelines
+- REST API design
+- Experience with React or Angular for frontend collaboration
+- Machine learning experience with PyTorch or TensorFlow
+- Excellent communication skills
+- Experience with Agile/Scrum methodology
+- Knowledge of GraphQL
+- Redis caching
+- Terraform infrastructure as code
+"""
+
+
+# ===========================================================================
+# TEST 9: Intent Classification (Week 2)
+# ===========================================================================
+
+class TestIntentClassification:
+    """Test the Week 2 intent classifier."""
+
+    def test_comparison_intent(self):
+        from src.intent import classify_intent
+        assert classify_intent("Compare the resume with the job description") == "comparison"
+        assert classify_intent("How well does the resume match the JD?") == "comparison"
+        assert classify_intent("Does the candidate fit this role?") == "comparison"
+        assert classify_intent("What matched skills are there?") == "comparison"
+
+    def test_gap_analysis_intent(self):
+        from src.intent import classify_intent
+        assert classify_intent("What skills are missing?") == "gap_analysis"
+        assert classify_intent("What gaps exist in the resume?") == "gap_analysis"
+        assert classify_intent("What does the candidate lack?") == "gap_analysis"
+
+    def test_improvement_intent(self):
+        from src.intent import classify_intent
+        assert classify_intent("How can the resume be improved?") == "improvement"
+        assert classify_intent("What should the candidate add?") == "improvement"
+        assert classify_intent("Give me suggestions to improve the profile") == "improvement"
+
+    def test_list_intent_preserved(self):
+        from src.intent import classify_intent
+        assert classify_intent("What skills are mentioned?") == "list"
+        assert classify_intent("List the projects") == "list"
+
+    def test_summary_intent_preserved(self):
+        from src.intent import classify_intent
+        assert classify_intent("Summarize the profile") == "summary"
+        assert classify_intent("Give me an overview") == "summary"
+
+    def test_detail_fallback(self):
+        from src.intent import classify_intent
+        assert classify_intent("When did John join TechCorp?") == "detail"
+        assert classify_intent("What is the GPA?") == "detail"
+
+    def test_needs_jd(self):
+        from src.intent import needs_jd
+        assert needs_jd("comparison") is True
+        assert needs_jd("gap_analysis") is True
+        assert needs_jd("improvement") is True
+        assert needs_jd("list") is False
+        assert needs_jd("summary") is False
+        assert needs_jd("detail") is False
+
+    def test_section_detection(self):
+        from src.intent import detect_target_section
+        assert detect_target_section("What skills are mentioned?") == "SKILLS"
+        assert detect_target_section("List the projects") == "PROJECTS"
+        assert detect_target_section("What is the weather?") is None
+
+
+# ===========================================================================
+# TEST 10: Skill Matcher (Week 2)
+# ===========================================================================
+
+class TestSkillMatcher:
+    """Test skill extraction and matching."""
+
+    def test_extract_skills_from_resume(self):
+        from src.matcher import extract_skills_from_text
+        text = "Programming Languages: Python, JavaScript, Go\nFrameworks: Django, React, FastAPI"
+        skills = extract_skills_from_text(text)
+        assert len(skills) > 0
+        skills_lower = [s.lower() for s in skills]
+        assert "python" in skills_lower
+        assert "django" in skills_lower
+
+    def test_extract_skills_from_jd(self):
+        from src.matcher import extract_skills_from_text
+        skills = extract_skills_from_text(SAMPLE_JD_TEXT)
+        assert len(skills) > 0
+        skills_lower = [s.lower() for s in skills]
+        # JD mentions Python, Django, PostgreSQL, etc.
+        assert any("python" in s for s in skills_lower)
+
+    def test_exact_matching(self):
+        from src.matcher import match_skills
+        resume_skills = ["Python", "Django", "PostgreSQL", "AWS"]
+        jd_skills = ["Python", "Django", "PostgreSQL", "GraphQL", "Angular"]
+        result = match_skills(resume_skills, jd_skills, use_semantic=False)
+
+        assert len(result["matched"]) >= 3  # Python, Django, PostgreSQL
+        assert len(result["missing"]) >= 1  # At least Angular or GraphQL
+        assert "match_summary" in result
+
+    def test_no_overclaiming(self):
+        """Matcher should not claim matches that don't exist."""
+        from src.matcher import match_skills
+        resume_skills = ["Python", "Django"]
+        jd_skills = ["Rust", "Kubernetes", "Terraform"]
+        result = match_skills(resume_skills, jd_skills, use_semantic=False)
+
+        assert len(result["matched"]) == 0
+        assert len(result["missing"]) == 3
+
+    def test_empty_jd(self):
+        from src.matcher import match_skills
+        result = match_skills(["Python"], [], use_semantic=False)
+        assert "No job description" in result["match_summary"]
+
+    def test_empty_resume(self):
+        from src.matcher import match_skills
+        result = match_skills([], ["Python", "Django"], use_semantic=False)
+        assert len(result["missing"]) == 2
+
+    def test_substring_matching(self):
+        """React should match React.js, etc."""
+        from src.matcher import match_skills
+        resume_skills = ["React.js", "Node.js"]
+        jd_skills = ["React", "Node"]
+        result = match_skills(resume_skills, jd_skills, use_semantic=False)
+        assert len(result["matched"]) == 2
+
+    def test_extract_empty_text(self):
+        from src.matcher import extract_skills_from_text
+        assert extract_skills_from_text("") == []
+        assert extract_skills_from_text("   ") == []
+
+
+# ===========================================================================
+# TEST 11: Citations (Week 2)
+# ===========================================================================
+
+class TestCitations:
+    """Test citation formatting."""
+
+    def test_format_citations(self):
+        from src.citations import format_citations
+        chunks = [
+            {"text": "Python, Django, React", "score": 0.85, "section": "SKILLS", "chunk_index": 0},
+            {"text": "Built REST APIs for 50K users", "score": 0.72, "section": "EXPERIENCE", "chunk_index": 3},
+        ]
+        citations = format_citations(chunks)
+        assert len(citations) > 0
+        assert citations[0]["index"] == 1
+        assert citations[0]["score"] >= 0.35
+        assert "excerpt" in citations[0]
+
+    def test_citations_filtered_by_threshold(self):
+        from src.citations import format_citations
+        chunks = [
+            {"text": "Irrelevant text", "score": 0.1, "section": "GENERAL", "chunk_index": 0},
+        ]
+        citations = format_citations(chunks)
+        # Should still return at least 1 (best available)
+        assert len(citations) >= 1
+
+    def test_empty_citations(self):
+        from src.citations import format_citations, build_citation_text
+        assert format_citations([]) == []
+        assert build_citation_text([]) == ""
+
+    def test_citation_text_format(self):
+        from src.citations import build_citation_text
+        citations = [
+            {"index": 1, "section": "SKILLS", "score": 0.85, "excerpt": "Python, Django"},
+        ]
+        text = build_citation_text(citations)
+        assert "Supporting Evidence" in text
+        assert "[1]" in text
+        assert "Skills" in text
+
+    def test_attach_citations(self):
+        from src.citations import attach_citations_to_answer
+        answer = "The candidate has Python skills."
+        citations = [
+            {"index": 1, "section": "SKILLS", "score": 0.85, "excerpt": "Python, Django"},
+        ]
+        result = attach_citations_to_answer(answer, citations)
+        assert "Supporting Evidence" in result
+        assert "Python skills" in result  # Original answer preserved
+
+
+# ===========================================================================
+# TEST 12: Comparison Quality (Week 2)
+# ===========================================================================
+
+class TestComparisonQuality:
+    """Test resume-vs-JD comparison end-to-end."""
+
+    def test_comparison_answer(self, indexed_collection):
+        from src.qa import answer_question_v2
+        results = retrieve(indexed_collection, SAMPLE_JD_TEXT, top_k=8)
+        response = answer_question_v2(
+            query="Compare the resume with the job description",
+            retrieved_chunks=results,
+            jd_text=SAMPLE_JD_TEXT,
+            intent="comparison",
+        )
+        assert response["query_type"] == "comparison"
+        assert "Matched" in response["answer"] or "Missing" in response["answer"]
+        assert response["confidence"] in ["high", "medium", "low"]
+
+    def test_gap_analysis_answer(self, indexed_collection):
+        from src.qa import answer_question_v2
+        results = retrieve(indexed_collection, SAMPLE_JD_TEXT, top_k=8)
+        response = answer_question_v2(
+            query="What skills are missing?",
+            retrieved_chunks=results,
+            jd_text=SAMPLE_JD_TEXT,
+            intent="gap_analysis",
+        )
+        assert response["query_type"] == "gap_analysis"
+        assert len(response["answer"]) > 20
+
+    def test_improvement_answer(self, indexed_collection):
+        from src.qa import answer_question_v2
+        results = retrieve(indexed_collection, SAMPLE_JD_TEXT, top_k=8)
+        response = answer_question_v2(
+            query="How can the resume be improved?",
+            retrieved_chunks=results,
+            jd_text=SAMPLE_JD_TEXT,
+            intent="improvement",
+        )
+        assert response["query_type"] == "improvement"
+        assert len(response["answer"]) > 20
+
+    def test_v2_preserves_list_query(self, indexed_collection):
+        """Non-JD queries should still work through v2."""
+        from src.qa import answer_question_v2
+        results = retrieve(indexed_collection, "What skills are mentioned?")
+        response = answer_question_v2(
+            query="What skills are mentioned?",
+            retrieved_chunks=results,
+            jd_text="",
+        )
+        assert response["query_type"] == "list"
+        assert "python" in response["answer"].lower() or "django" in response["answer"].lower()
+
+    def test_matched_skills_accurate(self, indexed_collection):
+        """Matched skills should actually exist in the resume."""
+        from src.qa import answer_question_v2
+        results = retrieve(indexed_collection, SAMPLE_JD_TEXT, top_k=8)
+        response = answer_question_v2(
+            query="Compare resume with JD",
+            retrieved_chunks=results,
+            jd_text=SAMPLE_JD_TEXT,
+            intent="comparison",
+        )
+        # Answer should mention Python (which IS in the resume)
+        assert "Python" in response["answer"] or "python" in response["answer"].lower()
+
+    def test_missing_skills_not_invented(self, indexed_collection):
+        """Missing skills should actually be absent from the resume."""
+        from src.matcher import extract_skills_from_text, match_skills
+        resume_text = SAMPLE_RESUME_TEXT
+        resume_skills = extract_skills_from_text(resume_text)
+        jd_text = "Requirements: Rust, Scala, Haskell"
+        jd_skills = extract_skills_from_text(jd_text)
+        result = match_skills(resume_skills, jd_skills, use_semantic=False)
+        # These skills are NOT in the sample resume
+        assert len(result["missing"]) >= 2
+
+
+# ===========================================================================
+# TEST 13: Fallback Handling (Week 2)
+# ===========================================================================
+
+class TestFallbacks:
+    """Test graceful handling of edge cases."""
+
+    def test_comparison_without_jd(self, indexed_collection):
+        """Comparison query without JD should give a clear message."""
+        from src.qa import answer_question_v2
+        results = retrieve(indexed_collection, "Compare resume")
+        response = answer_question_v2(
+            query="Compare the resume with the job description",
+            retrieved_chunks=results,
+            jd_text="",
+            intent="comparison",
+        )
+        assert response["confidence"] == "none"
+        assert "job description" in response["answer"].lower() or "jd" in response["answer"].lower()
+
+    def test_gap_without_jd(self):
+        """Gap analysis without JD should give a clear message."""
+        from src.qa import answer_question_v2
+        response = answer_question_v2(
+            query="What skills are missing?",
+            retrieved_chunks=[],
+            jd_text="",
+            intent="gap_analysis",
+        )
+        assert response["confidence"] == "none"
+
+    def test_no_results(self):
+        """No retrieval results should be handled gracefully."""
+        from src.qa import answer_question_v2
+        response = answer_question_v2(
+            query="Compare resume",
+            retrieved_chunks=[],
+            jd_text="Some JD text here",
+            intent="comparison",
+        )
+        assert response["confidence"] == "none"
+        assert len(response["answer"]) > 10
+
+    def test_vague_query(self, indexed_collection):
+        """Vague query should not crash."""
+        from src.qa import answer_question_v2
+        results = retrieve(indexed_collection, "stuff things")
+        response = answer_question_v2(
+            query="stuff things",
+            retrieved_chunks=results,
+            jd_text="",
+        )
+        assert response["answer"]  # Should return something, not crash
+
+    def test_v2_handles_empty_query(self):
+        """Empty query should not crash."""
+        from src.qa import answer_question_v2
+        response = answer_question_v2(
+            query="",
+            retrieved_chunks=[],
+            jd_text="",
+        )
+        assert response["answer"]
+
+    def test_fallback_prompts(self):
+        """Fallback messages should be clear and helpful."""
+        from src.prompts import format_fallback_answer
+        assert "resume" in format_fallback_answer("no_resume").lower()
+        assert "job description" in format_fallback_answer("no_jd").lower()
+        assert len(format_fallback_answer("weak_retrieval")) > 20
+        assert len(format_fallback_answer("out_of_scope")) > 20
+
+
+# ===========================================================================
+# TEST 14: Refresh Workflow (Week 2)
+# ===========================================================================
+
+class TestRefresh:
+    """Test session refresh and cleanup."""
+
+    def test_clear_jd(self):
+        from src.refresh import clear_jd
+
+        class MockState(dict):
+            def __getattr__(self, key):
+                return self.get(key)
+            def __setattr__(self, key, value):
+                self[key] = value
+
+        state = MockState(jd_text="Some JD", jd_skills=["Python"])
+        clear_jd(state)
+        assert state["jd_text"] == ""
+        assert state.get("jd_skills") is None
+
+    def test_session_validity(self):
+        from src.refresh import is_session_valid
+
+        class MockState(dict):
+            def __getattr__(self, key):
+                return self.get(key)
+
+        # Empty state
+        state = MockState()
+        result = is_session_valid(state)
+        assert result["status"] == "empty"
+
+        # Resume only
+        state = MockState(document_loaded=True, jd_text="", collection="something")
+        result = is_session_valid(state)
+        assert result["status"] == "ready_resume_only"
+
+        # Full
+        state = MockState(document_loaded=True, jd_text="Some JD", collection="something")
+        result = is_session_valid(state)
+        assert result["status"] == "ready_full"
+
+    def test_clear_session_state(self):
+        from src.refresh import clear_session_state
+
+        class MockState(dict):
+            def __getattr__(self, key):
+                return self.get(key)
+            def __setattr__(self, key, value):
+                self[key] = value
+
+        state = MockState(
+            messages=[{"role": "user", "content": "hi"}],
+            document_loaded=True,
+            jd_text="Some JD",
+            collection="something",
+            doc_info={"filename": "test.pdf"},
+        )
+        clear_session_state(state)
+        assert state["messages"] == []
+        assert state["document_loaded"] is False
+        assert state["jd_text"] == ""
+        assert state["doc_info"] == {}
+
+
+# ===========================================================================
+# TEST 15: Retriever Enhancement (Week 2)
+# ===========================================================================
+
+class TestRetrieverV2:
+    """Test Week 2 retriever enhancements."""
+
+    def test_retrieve_by_section(self, indexed_collection):
+        from src.retriever import retrieve_by_section
+        results = retrieve_by_section(
+            indexed_collection, "Python Django", target_section="SKILLS"
+        )
+        assert len(results) > 0
+
+    def test_retrieve_by_section_fallback(self, indexed_collection):
+        """Should fall back to global when section has no results."""
+        from src.retriever import retrieve_by_section
+        results = retrieve_by_section(
+            indexed_collection, "Python", target_section="REFERENCES"
+        )
+        # REFERENCES section doesn't exist in sample, should fall back
+        assert len(results) > 0
+
+    def test_retrieve_for_comparison(self, indexed_collection):
+        from src.retriever import retrieve_for_comparison
+        results = retrieve_for_comparison(
+            indexed_collection, SAMPLE_JD_TEXT, top_k=5
+        )
+        assert len(results) > 0
+        # Results should be from different sections
+        sections = {r["section"] for r in results}
+        assert len(sections) >= 1  # At least one section
+
+
+# ===========================================================================
+# TEST 16: Prompt Templates (Week 2)
+# ===========================================================================
+
+class TestPromptTemplates:
+    """Test prompt template formatting."""
+
+    def test_format_list(self):
+        from src.prompts import format_list_answer
+        result = format_list_answer(["Python", "Django", "React"], "skills")
+        assert "Python" in result
+        assert "Total: 3" in result
+
+    def test_format_list_empty(self):
+        from src.prompts import format_list_answer
+        result = format_list_answer([], "skills")
+        assert "No skills" in result
+
+    def test_format_comparison(self):
+        from src.prompts import format_comparison_answer
+        match_result = {
+            "matched": [("Python", "Python"), ("Django", "Django")],
+            "partially_matched": [("React", "React.js", 0.92)],
+            "missing": ["GraphQL"],
+            "match_summary": "Match Score: 60%",
+        }
+        result = format_comparison_answer(match_result)
+        assert "Matched" in result
+        assert "Missing" in result
+        assert "Python" in result
+
+    def test_format_gap_analysis(self):
+        from src.prompts import format_gap_analysis_answer
+        match_result = {
+            "matched": [("Python", "Python")],
+            "partially_matched": [],
+            "missing": ["Rust", "Scala"],
+            "match_summary": "2 missing",
+        }
+        result = format_gap_analysis_answer(match_result)
+        assert "Rust" in result
+        assert "Scala" in result
+
+    def test_format_improvement(self):
+        from src.prompts import format_improvement_answer
+        match_result = {
+            "matched": [("Python", "Python")],
+            "partially_matched": [("React Native", "React.js", 0.80)],
+            "missing": ["GraphQL"],
+            "match_summary": "1 missing",
+        }
+        result = format_improvement_answer(match_result)
+        assert "GraphQL" in result
+        assert "Tips" in result or "Highlight" in result
+
+    def test_format_fallback(self):
+        from src.prompts import format_fallback_answer
+        assert "resume" in format_fallback_answer("no_resume").lower()
+        assert "job description" in format_fallback_answer("no_jd").lower()
+

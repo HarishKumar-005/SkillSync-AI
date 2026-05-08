@@ -15,7 +15,7 @@
 
 ### Architecture
 ```
-Upload → Parse → Clean → Chunk → Embed → Store → Query → Retrieve → Answer
+Upload → Parse → Clean → Chunk → Embed → Store → Query → Retrieve → Answer 
 ```
 
 ---

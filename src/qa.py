@@ -461,3 +461,145 @@ def answer_question(query: str, retrieved_chunks: list[dict]) -> dict:
         "num_sources": len(relevant_chunks),
         "query_type": query_type,
     }
+
+
+# ---------------------------------------------------------------------------
+# Week 2: Enhanced Q&A with intent routing, citations, and skill-gap analysis
+# ---------------------------------------------------------------------------
+
+def answer_question_v2(
+    query: str,
+    retrieved_chunks: list[dict],
+    jd_text: str = "",
+    intent: str | None = None,
+) -> dict:
+    """
+    Week 2 enhanced answer generation with intent routing, citations, and
+    skill-gap analysis.
+
+    Falls back to Week 1 answer_question() for basic queries without JD.
+
+    Args:
+        query: The user's question.
+        retrieved_chunks: List of chunk dicts from the retriever.
+        jd_text: Job description text (empty if not provided).
+        intent: Pre-classified intent. If None, will be classified.
+
+    Returns:
+        Dict with keys:
+          - answer: The synthesized final answer text
+          - sources: List of source chunks used
+          - confidence: 'high', 'medium', 'low', or 'none'
+          - num_sources: Number of relevant sources found
+          - query_type: Detected intent/query type
+          - citations: List of citation dicts
+    """
+    from src.intent import classify_intent, detect_target_section, needs_jd
+    from src.citations import format_citations, attach_citations_to_answer
+    from src.matcher import extract_skills_from_text, match_skills
+    from src.prompts import (
+        format_comparison_answer, format_gap_analysis_answer,
+        format_improvement_answer, format_fallback_answer,
+    )
+
+    # Classify intent if not provided
+    if intent is None:
+        intent = classify_intent(query)
+
+    # Check if JD is needed but missing
+    if needs_jd(intent) and not jd_text.strip():
+        return {
+            "answer": format_fallback_answer("no_jd"),
+            "sources": [],
+            "confidence": "none",
+            "num_sources": 0,
+            "query_type": intent,
+            "citations": [],
+        }
+
+    # For non-JD queries, delegate to Week 1 logic with citations added
+    if not needs_jd(intent):
+        base_response = answer_question(query, retrieved_chunks)
+
+        # Add citations to Week 1 responses
+        citations = format_citations(base_response.get("sources", []))
+        if citations and base_response["confidence"] != "none":
+            base_response["answer"] = attach_citations_to_answer(
+                base_response["answer"], citations
+            )
+        base_response["citations"] = citations
+        return base_response
+
+    # --- JD-based intents: comparison, gap_analysis, improvement ---
+
+    if not retrieved_chunks:
+        return {
+            "answer": format_fallback_answer("weak_retrieval"),
+            "sources": [],
+            "confidence": "none",
+            "num_sources": 0,
+            "query_type": intent,
+            "citations": [],
+        }
+
+    # Filter by relevance threshold
+    relevant_chunks = [
+        chunk for chunk in retrieved_chunks
+        if chunk.get("score", 0) >= RELEVANCE_THRESHOLD
+    ]
+
+    if not relevant_chunks:
+        relevant_chunks = retrieved_chunks[:3]  # Use top 3 even if below threshold
+
+    # Extract skills from resume chunks and JD
+    resume_text = "\n".join(c["text"] for c in relevant_chunks)
+    resume_skills = extract_skills_from_text(resume_text)
+    jd_skills = extract_skills_from_text(jd_text)
+
+    # Perform skill matching
+    match_result = match_skills(resume_skills, jd_skills)
+
+    # Generate answer based on intent
+    if intent == "comparison":
+        answer = format_comparison_answer(match_result)
+    elif intent == "gap_analysis":
+        answer = format_gap_analysis_answer(match_result)
+    elif intent == "improvement":
+        answer = format_improvement_answer(match_result)
+    else:
+        answer = format_comparison_answer(match_result)
+
+    # Determine confidence from match quality
+    matched_count = len(match_result.get("matched", []))
+    partial_count = len(match_result.get("partially_matched", []))
+    total_jd = len(jd_skills) if jd_skills else 1
+
+    match_ratio = (matched_count + partial_count * 0.5) / total_jd
+    if match_ratio >= 0.6:
+        confidence = "high"
+    elif match_ratio >= 0.3:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    # Format citations
+    citations = format_citations(relevant_chunks)
+    answer = attach_citations_to_answer(answer, citations)
+
+    # Append confidence
+    answer += f"\n\n*Confidence: {confidence.upper()}*"
+
+    logger.info(
+        "Generated %s-confidence %s answer: %d matched, %d partial, %d missing skills",
+        confidence, intent, matched_count, partial_count, len(match_result.get("missing", [])),
+    )
+
+    return {
+        "answer": answer,
+        "sources": relevant_chunks[:5],
+        "confidence": confidence,
+        "num_sources": len(relevant_chunks),
+        "query_type": intent,
+        "citations": citations,
+    }
+

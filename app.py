@@ -1,11 +1,12 @@
 """
-SkillSync AI — Week 1 Streamlit Application
+SkillSync AI — Week 2 Streamlit Application
 
 A Resume-to-Job Description Match Copilot that analyzes uploaded documents,
 builds a searchable knowledge base, and answers questions from those documents
 using a retrieval-based chat workflow.
 
 Week 1 scope: Document upload, parsing, chunking, ChromaDB storage, and basic Q&A.
+Week 2 scope: JD input, skill-gap analysis, citations, prompt tuning, refresh workflow.
 """
 
 import os
@@ -18,8 +19,10 @@ from src.cleaner import clean_text
 from src.chunker import chunk_text
 from src.embeddings import get_embedding_model, embed_texts
 from src.vectorstore import get_chroma_client, create_collection, add_chunks
-from src.retriever import retrieve
-from src.qa import answer_question, _detect_target_section
+from src.retriever import retrieve, retrieve_by_section, retrieve_for_comparison
+from src.qa import answer_question, answer_question_v2, _detect_target_section
+from src.intent import classify_intent, detect_target_section, needs_jd
+from src.refresh import clear_session_state, clear_knowledge_base, clear_jd, is_session_valid
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -35,7 +38,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 st.set_page_config(
   page_title="SkillSync AI",
-  page_icon="",
+  page_icon="🎯",
   layout="wide",
   initial_sidebar_state="expanded",
 )
@@ -127,6 +130,15 @@ st.markdown("""
     font-size: 0.75rem;
     font-weight: 600;
   }
+  .badge-jd {
+    display: inline-block;
+    background: #312e81;
+    color: #a5b4fc;
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
 </style>
 """, unsafe_allow_html=True)
 
@@ -143,6 +155,9 @@ if "document_loaded" not in st.session_state:
   st.session_state.document_loaded = False
 if "doc_info" not in st.session_state:
   st.session_state.doc_info = {}
+# Week 2 session state
+if "jd_text" not in st.session_state:
+  st.session_state.jd_text = ""
 
 
 # ---------------------------------------------------------------------------
@@ -220,11 +235,11 @@ def process_document(uploaded_file) ->tuple[bool, str]:
 # Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
-  st.markdown("### SkillSync AI")
+  st.markdown("### 🎯 SkillSync AI")
   st.divider()
 
   # File upload
-  st.markdown("### Upload Document")
+  st.markdown("### 📄 Upload Resume")
   uploaded_file = st.file_uploader(
     "Upload a resume or document",
     type=["pdf", "docx"],
@@ -245,46 +260,91 @@ with st.sidebar:
 
   st.divider()
 
-  # Document status
-  st.markdown("### Document Status")
+  # Week 2: Job Description Input
+  st.markdown("### 📋 Job Description")
+  jd_input = st.text_area(
+    "Paste the job description here",
+    value=st.session_state.jd_text,
+    height=150,
+    placeholder="Paste the job description requirements here to compare against the resume...",
+    key="jd_input",
+    help="Enter the job description to enable resume-vs-JD comparison, skill-gap analysis, and improvement suggestions.",
+  )
+
+  # Update JD in session state
+  if jd_input != st.session_state.jd_text:
+    st.session_state.jd_text = jd_input
+
+  st.divider()
+
+  # Document & Session Status
+  st.markdown("### 📊 Session Status")
+  session_info = is_session_valid(st.session_state)
+
   if st.session_state.document_loaded:
     info = st.session_state.doc_info
     st.markdown(f"""
     <div class="status-card">
-      <div class="label">Loaded File</div>
+      <div class="label">Loaded Resume</div>
       <div class="value" style="font-size: 0.95rem;">{info.get('filename', 'N/A')}</div>
     </div>
     """, unsafe_allow_html=True)
 
     col1, col2 = st.columns(2)
     with col1:
-      st.metric(" Characters", f"{info.get('cleaned_chars', 0):,}")
+      st.metric("Characters", f"{info.get('cleaned_chars', 0):,}")
     with col2:
-      st.metric(" Chunks", info.get('num_chunks', 0))
+      st.metric("Chunks", info.get('num_chunks', 0))
 
     st.markdown(f'<span class="badge-success">✓ Knowledge base ready</span>', unsafe_allow_html=True)
   else:
-    st.info("No document loaded yet. Upload a PDF or DOCX to get started.")
+    st.info("No resume loaded yet. Upload a PDF or DOCX to get started.")
+
+  # JD status indicator
+  if st.session_state.jd_text.strip():
+    jd_len = len(st.session_state.jd_text.strip())
+    st.markdown(f'<span class="badge-jd">📋 JD loaded ({jd_len} chars)</span>', unsafe_allow_html=True)
+
+  # Session mode indicator
+  status_labels = {
+    "ready_full": "🟢 Ready: Resume + JD comparison",
+    "ready_resume_only": "🟡 Ready: Resume Q&A only",
+    "jd_only_no_resume": "🔴 JD provided but no resume uploaded",
+    "empty": "⚪ No documents loaded",
+  }
+  st.caption(status_labels.get(session_info["status"], ""))
 
   st.divider()
 
-  # Reset button
-  if st.button("Clear & Reset", use_container_width=True):
-    st.session_state.messages = []
-    st.session_state.collection = None
-    st.session_state.chroma_client = None
-    st.session_state.document_loaded = False
-    st.session_state.doc_info = {}
-    st.rerun()
+  # Week 2: Refresh / Reset controls
+  st.markdown("### 🔄 Session Controls")
+  col_r1, col_r2 = st.columns(2)
+  with col_r1:
+    if st.button("🗑️ Full Reset", use_container_width=True, help="Clear everything: resume, JD, chat history"):
+      clear_session_state(st.session_state)
+      st.rerun()
+  with col_r2:
+    if st.button("📋 Clear JD", use_container_width=True, help="Clear only the job description"):
+      clear_jd(st.session_state)
+      st.rerun()
 
 
 # ---------------------------------------------------------------------------
 # Main Chat Area
 # ---------------------------------------------------------------------------
-st.markdown("""
+# Dynamic header based on mode
+session_info = is_session_valid(st.session_state)
+if session_info["has_jd"] and session_info["has_resume"]:
+  subtitle = "Compare your resume against the job description"
+elif session_info["has_resume"]:
+  subtitle = "Ask questions about your resume • Paste a JD to unlock comparison mode"
+else:
+  subtitle = "Upload a resume and paste a job description to get started"
+
+st.markdown(f"""
 <div class="app-header">
   <h1>SkillSync AI</h1>
-  <p>Upload a document and ask questions about its content</p>
+  <p>{subtitle}</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -295,20 +355,24 @@ for message in st.session_state.messages:
 
     # Show sources if present (for assistant messages)
     if message["role"] == "assistant" and message.get("sources"):
-      with st.expander(f" View source chunks ({len(message['sources'])} found)", expanded=False):
+      with st.expander(f"📎 View source chunks ({len(message['sources'])} found)", expanded=False):
         for i, source in enumerate(message["sources"], 1):
           score_pct = f"{source.get('score', 0):.0%}"
+          section_label = source.get("section", "GENERAL")
           st.markdown(
             f'<div class="source-chunk">'
             f'<strong>Chunk {source.get("chunk_index", i)}</strong>'
-            f'<span class="badge-info">Relevance: {score_pct}</span><br><br>'
+            f'<span class="badge-info">Relevance: {score_pct}</span>'
+            f'<span style="background:#312e81; color:#a5b4fc; padding:0.15rem 0.5rem; '
+            f'border-radius:9999px; font-size:0.7rem; font-weight:600;">'
+            f'📂 {section_label}</span><br><br>'
             f'{source.get("text", "")[:400]}{"..." if len(source.get("text", ""))>400 else ""}'
             f'</div>',
             unsafe_allow_html=True,
           )
 
 # Chat input
-if prompt := st.chat_input("Ask a question about your document...", key="chat_input"):
+if prompt := st.chat_input("Ask about your resume, compare with JD, or analyze skill gaps...", key="chat_input"):
   # Display user message
   with st.chat_message("user"):
     st.markdown(prompt)
@@ -317,7 +381,7 @@ if prompt := st.chat_input("Ask a question about your document...", key="chat_in
   # Generate response
   with st.chat_message("assistant"):
     if not st.session_state.document_loaded:
-      response_text = "No document has been uploaded yet. Please upload a PDF or DOCX file using the sidebar, then try again."
+      response_text = "📄 **No resume uploaded yet.** Please upload a PDF or DOCX file using the sidebar, then try again."
       st.markdown(response_text)
       st.session_state.messages.append({
         "role": "assistant",
@@ -325,29 +389,36 @@ if prompt := st.chat_input("Ask a question about your document...", key="chat_in
         "sources": [],
       })
     else:
-      with st.spinner("Searching document..."):
-        target_section = _detect_target_section(prompt)
-        
-        results = []
-        if target_section:
-          # Stage 1: Targeted retrieval
-          results = retrieve(
+      with st.spinner("Analyzing..."):
+        # Week 2: Classify intent
+        intent = classify_intent(prompt)
+        target_section = detect_target_section(prompt)
+        jd_text = st.session_state.jd_text.strip()
+
+        # Retrieve relevant chunks based on intent
+        if needs_jd(intent) and jd_text:
+          # For comparison/gap/improvement: retrieve resume chunks relevant to JD
+          results = retrieve_for_comparison(
             collection=st.session_state.collection,
-            query=prompt,
-            top_k=5,
-            where_filter={"section": target_section}
+            jd_text=jd_text,
+            top_k=8,
           )
-        
-        # Stage 2: Fallback to global retrieval if targeted yields nothing
-        if not results:
-          results = retrieve(
+        else:
+          # For regular queries: section-targeted retrieval with fallback
+          results = retrieve_by_section(
             collection=st.session_state.collection,
             query=prompt,
+            target_section=target_section,
             top_k=5,
           )
 
-        # Generate answer
-        response = answer_question(prompt, results)
+        # Generate answer using Week 2 v2 engine
+        response = answer_question_v2(
+          query=prompt,
+          retrieved_chunks=results,
+          jd_text=jd_text,
+          intent=intent,
+        )
 
       # --- Section 1: FINAL ANSWER ---
       st.markdown("**Answer:**")
@@ -357,10 +428,10 @@ if prompt := st.chat_input("Ask a question about your document...", key="chat_in
       confidence = response["confidence"]
       query_type = response.get("query_type", "detail")
       conf_colors = {
-        "high": ("", "#065f46", "#6ee7b7"),
-        "medium": ("", "#78350f", "#fbbf24"),
-        "low": ("", "#7c2d12", "#fb923c"),
-        "none": ("", "#7f1d1d", "#fca5a5"),
+        "high": ("🟢", "#065f46", "#6ee7b7"),
+        "medium": ("🟡", "#78350f", "#fbbf24"),
+        "low": ("🟠", "#7c2d12", "#fb923c"),
+        "none": ("🔴", "#7f1d1d", "#fca5a5"),
       }
       icon, bg, fg = conf_colors.get(confidence, conf_colors["none"])
       st.markdown(
@@ -369,13 +440,13 @@ if prompt := st.chat_input("Ask a question about your document...", key="chat_in
         f'{icon} Confidence: {confidence}</span>'
         f'<span style="background:#1e3a5f; color:#7dd3fc; padding:0.2rem 0.6rem; '
         f'border-radius:9999px; font-size:0.75rem; font-weight:600;">'
-        f'Query: {query_type}</span>',
+        f'🏷️ {query_type}</span>',
         unsafe_allow_html=True,
       )
 
       # --- Section 2: SUPPORTING EVIDENCE ---
       if response["sources"]:
-        with st.expander(f" Supporting Evidence ({len(response['sources'])} chunks)", expanded=False):
+        with st.expander(f"📎 Supporting Evidence ({len(response['sources'])} chunks)", expanded=False):
           for i, source in enumerate(response["sources"], 1):
             score_pct = f"{source.get('score', 0):.0%}"
             section_label = source.get("section", "GENERAL")
@@ -385,7 +456,7 @@ if prompt := st.chat_input("Ask a question about your document...", key="chat_in
               f'<span class="badge-info">Relevance: {score_pct}</span>'
               f'<span style="background:#312e81; color:#a5b4fc; padding:0.15rem 0.5rem; '
               f'border-radius:9999px; font-size:0.7rem; font-weight:600;">'
-              f' {section_label}</span><br><br>'
+              f'📂 {section_label}</span><br><br>'
               f'{source.get("text", "")[:400]}{"..." if len(source.get("text", ""))>400 else ""}'
               f'</div>',
               unsafe_allow_html=True,
@@ -403,30 +474,34 @@ if prompt := st.chat_input("Ask a question about your document...", key="chat_in
 # ---------------------------------------------------------------------------
 if not st.session_state.messages and not st.session_state.document_loaded:
   st.markdown("---")
-  st.markdown("### Getting Started")
+  st.markdown("### 🚀 Getting Started")
   col1, col2, col3 = st.columns(3)
   with col1:
     st.markdown("""
-    **Step 1: Upload**
-    Upload a resume or document (PDF/DOCX) using the sidebar.
+    **Step 1: Upload Resume**
+    Upload a resume (PDF/DOCX) using the sidebar.
     """)
   with col2:
     st.markdown("""
-    **Step 2: Wait**
-    The system will extract, chunk, and index your document automatically.
+    **Step 2: Paste Job Description**
+    *(Optional)* Paste a JD to enable comparison mode.
     """)
   with col3:
     st.markdown("""
-    **Step 3: Ask**
-    Ask questions about the document content in the chat below.
+    **Step 3: Ask Questions**
+    Ask about skills, compare with JD, or analyze gaps.
     """)
 
   st.markdown("---")
-  st.markdown("#### Example Questions")
+  st.markdown("#### 💬 Example Questions")
   example_cols = st.columns(2)
   with example_cols[0]:
+    st.markdown("**Resume Q&A:**")
     st.markdown("- *What skills are mentioned?*")
-    st.markdown("- *What is the candidate's experience summary?*")
+    st.markdown("- *Summarize the profile*")
+    st.markdown("- *What certifications does the candidate have?*")
   with example_cols[1]:
-    st.markdown("- *Which tools and technologies are listed?*")
-    st.markdown("- *What sections are present in the document?*")
+    st.markdown("**JD Comparison** *(requires JD)*:")
+    st.markdown("- *Compare the resume with the job description*")
+    st.markdown("- *What skills are missing for this job?*")
+    st.markdown("- *How can the resume be improved?*")

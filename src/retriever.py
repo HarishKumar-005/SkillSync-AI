@@ -3,6 +3,10 @@ Retriever Module — Orchestrates semantic search over stored document chunks.
 
 Encodes the user query, searches ChromaDB, and returns ranked results
 with text, similarity score, and source metadata.
+
+Week 2 additions:
+  - retrieve_by_section(): Section-targeted retrieval with fallback
+  - retrieve_for_comparison(): Pulls resume chunks relevant to JD requirements
 """
 
 import logging
@@ -70,3 +74,116 @@ def retrieve(
         len(retrieved), query[:50],
     )
     return retrieved
+
+
+# ---------------------------------------------------------------------------
+# Week 2: Enhanced retrieval functions
+# ---------------------------------------------------------------------------
+
+def retrieve_by_section(
+    collection,
+    query: str,
+    target_section: str | None = None,
+    top_k: int = 5,
+) -> list[dict]:
+    """
+    Section-targeted retrieval with automatic fallback to global search.
+
+    Tries the target section first. If it yields no results or the target
+    section is None, falls back to global retrieval.
+
+    Args:
+        collection: ChromaDB collection to search.
+        query: User's question string.
+        target_section: Section to target (e.g., 'SKILLS'). None for global.
+        top_k: Number of top results to return.
+
+    Returns:
+        List of result dicts (same format as retrieve()).
+    """
+    results = []
+
+    # Stage 1: Targeted retrieval
+    if target_section:
+        results = retrieve(
+            collection=collection,
+            query=query,
+            top_k=top_k,
+            where_filter={"section": target_section},
+        )
+
+    # Stage 2: Fallback to global if targeted yields nothing
+    if not results:
+        results = retrieve(
+            collection=collection,
+            query=query,
+            top_k=top_k,
+        )
+
+    return results
+
+
+def retrieve_for_comparison(
+    collection,
+    jd_text: str,
+    top_k: int = 8,
+) -> list[dict]:
+    """
+    Retrieve resume chunks most relevant to a job description.
+
+    Uses the JD text as the query to find the best matching resume content.
+    Prioritizes SKILLS and EXPERIENCE sections.
+
+    Args:
+        collection: ChromaDB collection containing resume chunks.
+        jd_text: The job description text.
+        top_k: Number of chunks to retrieve.
+
+    Returns:
+        List of result dicts from the resume, ranked by relevance to JD.
+    """
+    if not jd_text or not jd_text.strip():
+        logger.warning("Empty JD text for comparison retrieval.")
+        return []
+
+    # Retrieve skills-focused chunks
+    skills_results = retrieve(
+        collection=collection,
+        query=jd_text,
+        top_k=top_k // 2,
+        where_filter={"section": "SKILLS"},
+    )
+
+    # Retrieve experience-focused chunks
+    exp_results = retrieve(
+        collection=collection,
+        query=jd_text,
+        top_k=top_k // 2,
+        where_filter={"section": "EXPERIENCE"},
+    )
+
+    # Retrieve global (catches PROJECTS, CERTIFICATES, etc.)
+    global_results = retrieve(
+        collection=collection,
+        query=jd_text,
+        top_k=top_k // 2,
+    )
+
+    # Merge and deduplicate by chunk_index
+    seen = set()
+    merged = []
+    for chunk in skills_results + exp_results + global_results:
+        key = chunk.get("chunk_index", id(chunk))
+        if key not in seen:
+            seen.add(key)
+            merged.append(chunk)
+
+    # Sort by score descending
+    merged.sort(key=lambda c: c.get("score", 0), reverse=True)
+
+    logger.info(
+        "Comparison retrieval: %d unique chunks from %d skills + %d exp + %d global",
+        len(merged), len(skills_results), len(exp_results), len(global_results),
+    )
+
+    return merged[:top_k]
